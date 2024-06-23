@@ -105,7 +105,7 @@ async def summarize(res: list[dict]):
     # Create a Bedrock Runtime client in the AWS Region of your choice.
     client = boto3.client("bedrock-runtime", region_name="us-east-1")
     # Define the prompt for the model.
-    prompt = f"Assess whether the response data poses a security risk. {res}. If not, say None."
+    prompt = f"Determine whether the response data poses a security risk. {res}. If no issue, only say clear."
 
     # Set the model ID, e.g., Claude 3 Haiku.
     model_id = "anthropic.claude-3-haiku-20240307-v1:0"
@@ -113,7 +113,7 @@ async def summarize(res: list[dict]):
     # Format the request payload using the model's native structure.
     native_request = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 2000,
+        "max_tokens": 10000,
         "temperature": 0.5,
         "messages": [
             {
@@ -129,14 +129,15 @@ async def summarize(res: list[dict]):
     try:
         # Invoke the model with the request.
         response = client.invoke_model(modelId=model_id, body=request)
+        # Decode the response body.
+        model_response = json.loads(response["body"].read())
+
+        # Extract and print the response text.
+        response_text = model_response["content"][0]["text"]
 
     except Exception as e:
         response_text = "Error invoking model: " + str(e)
-    # Decode the response body.
-    model_response = json.loads(response["body"].read())
 
-    # Extract and print the response text.
-    response_text = model_response["content"][0]["text"]
     print("Response", response_text)
     return response_text
 
