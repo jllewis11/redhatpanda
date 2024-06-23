@@ -24,8 +24,13 @@ playwright_image = modal.Image.debian_slim(
 async def get_links(url: str) -> set[str]:
     from playwright.async_api import async_playwright
     from playwright._impl._errors import TargetClosedError
+    import requests
 
     try:
+        if url == "https://jllewis11--example-mockdata-details.modal.run/":
+            data = requests.get(url).json()
+            return [(url, data)]
+
         async with async_playwright() as p:
             browser = await p.chromium.launch()
             page = await browser.new_page()
@@ -56,6 +61,7 @@ async def print_network_info(base_url: str, link: str) -> None:
     from playwright.async_api import async_playwright
     from playwright._impl._errors import TargetClosedError
     from upstash_redis import Redis
+    import requests
 
     redis = Redis(
         url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"]
@@ -67,6 +73,12 @@ async def print_network_info(base_url: str, link: str) -> None:
         redis.sadd(base_url, link)
     try:
         responses = []
+
+        if base_url == "https://jllewis11--example-mockdata-details.modal.run/":
+            data = requests.get(base_url).json()
+            responses.append(data)
+            return responses
+
         async with async_playwright() as p:
             browser = await p.chromium.launch()
             context = await browser.new_context()
@@ -105,7 +117,7 @@ async def summarize(res: list[dict]):
     # Create a Bedrock Runtime client in the AWS Region of your choice.
     client = boto3.client("bedrock-runtime", region_name="us-east-1")
     # Define the prompt for the model.
-    prompt = f"Determine whether the response data poses a security risk. {res}. If no issue, only say clear."
+    prompt = f"Determine whether the response data poses one or more of the following security risk which are PII leaked, API keys exposed, or any other data that aren't suppose to be seen by the public. {res}. Do not say the word clear if there is a security issue. Only say clear if there is no security issue."
 
     # Set the model ID, e.g., Claude 3 Haiku.
     model_id = "anthropic.claude-3-haiku-20240307-v1:0"
