@@ -22,22 +22,22 @@ playwright_image = modal.Image.debian_slim(
 @app.function(image=playwright_image)
 async def get_links(url: str) -> set[str]:
     from playwright.async_api import async_playwright
+    from playwright._impl._errors import TargetClosedError
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            page = await browser.new_page()
-            await page.goto(url)
-            links = await page.eval_on_selector_all(
-                "a[href]", "elements => elements.map(element => element.href)"
-            )
-            print(links)
-            await browser.close()
+                browser = await p.chromium.launch()
+                page = await browser.new_page()
+                await page.goto(url)
+                links = await page.eval_on_selector_all(
+                    "a[href]", "elements => elements.map(element => element.href)"
+                )
+                await browser.close()
+
 
         base_url = links[0]
 
         # Filter out links that do not match the base url
         filtered_links = [link for link in links if base_url in link]
-        print(filtered_links)
         
         #Redo as a list of tuples(base_url, filtered_links)
         final_links = []
@@ -49,9 +49,10 @@ async def get_links(url: str) -> set[str]:
         return
 
 @app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
-def print_network_info(base_url: str, link: str) -> None:
+async def print_network_info(base_url: str, link: str) -> None:
 
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
+    from playwright._impl._errors import TargetClosedError
     from upstash_redis import Redis
 
     redis = Redis(url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"])
@@ -61,31 +62,37 @@ def print_network_info(base_url: str, link: str) -> None:
     else:
         redis.sadd(base_url, link)
     try:
-        with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch()
-                context = browser.new_context()
+        async with async_playwright() as p:
+
+                browser = await p.chromium.launch()
+                context = await browser.new_context()
 
                 # Add an event listener to print the response JSON of fetch/XHR requests
-                context.on('response', lambda response: (
-                    print(response.json()) if response.request.resource_type == 'fetch' else None
-                ))
+                async def print_response(response):
+                    if response.request.resource_type == 'fetch':
+                        print(await response.json())
 
-                page = context.new_page()
-                page.goto(link)
-                browser.close()
-            except Exception as e:
-                return
+                context.on('response', print_response)
+
+                page = await context.new_page()
+                await page.goto(link)
+                await browser.close()
+    except TargetClosedError:
+        return
     except Exception as e:
         return
 
-@app.function()
+
+@app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
 def scrape():
+    from upstash_redis import Redis
     base_url = "http://modal.com"
+    redis = Redis(url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"])
 
     links = get_links.remote(base_url)
     for results in print_network_info.starmap(links,return_exceptions=False):
         print(results)
+
 
 @app.local_entrypoint()
 def run():
