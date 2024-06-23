@@ -14,6 +14,7 @@ playwright_image = modal.Image.debian_slim(
     "apt-add-repository contrib",
     "pip install playwright",
     "pip install upstash-redis",
+    "pip install boto3",
     "playwright install-deps chromium",
     "playwright install chromium",
 )
@@ -50,7 +51,7 @@ async def get_links(url: str) -> set[str]:
 
 @app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
 async def print_network_info(base_url: str, link: str) -> None:
-
+    import asyncio
     from playwright.async_api import async_playwright
     from playwright._impl._errors import TargetClosedError
     from upstash_redis import Redis
@@ -62,25 +63,77 @@ async def print_network_info(base_url: str, link: str) -> None:
     else:
         redis.sadd(base_url, link)
     try:
+        responses = []
         async with async_playwright() as p:
-
                 browser = await p.chromium.launch()
                 context = await browser.new_context()
 
                 # Add an event listener to print the response JSON of fetch/XHR requests
                 async def print_response(response):
-                    if response.request.resource_type == 'fetch':
-                        print(await response.json())
-
+                    try:
+                        if response.request.resource_type == 'fetch' or response.request.resource_type == 'xhr':
+                            res = await response.json()
+                            if res is not None:
+                                responses.append(res)
+                    except Exception as e:
+                        return
+                
                 context.on('response', print_response)
 
                 page = await context.new_page()
                 await page.goto(link)
+                await asyncio.sleep(5)
                 await browser.close()
-    except TargetClosedError:
-        return
+    
+        return responses
+
     except Exception as e:
         return
+
+@app.function(image=playwright_image, secrets=[modal.Secret.from_name("my-aws-secret")])
+async def summarize(res: list[dict]):
+    import boto3
+    import json
+
+    # Create a Bedrock Runtime client in the AWS Region of your choice.
+    client = boto3.client("bedrock-runtime", region_name="us-east-1")
+    # Define the prompt for the model.
+    prompt = f"Extract only the elements that pose a security risk {res}"
+
+    # Set the model ID, e.g., Claude 3 Haiku.
+    model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+
+    # Format the request payload using the model's native structure.
+    native_request = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 2000,
+        "temperature": 0.5,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}],
+            }
+        ],
+    }
+
+    # Convert the native request to JSON.
+    request = json.dumps(native_request)
+
+    try:
+        # Invoke the model with the request.
+        response = client.invoke_model(modelId=model_id, body=request)
+
+    except (ClientError, Exception) as e:
+        print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+        exit(1)
+
+    # Decode the response body.
+    model_response = json.loads(response["body"].read())
+
+    # Extract and print the response text.
+    response_text = model_response["content"][0]["text"]
+    print(response_text)
+
 
 
 @app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
@@ -90,8 +143,17 @@ def scrape():
     redis = Redis(url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"])
 
     links = get_links.remote(base_url)
-    for results in print_network_info.starmap(links,return_exceptions=False):
-        print(results)
+    
+    results = []
+
+    for result in print_network_info.starmap(links):
+        if result is not None:
+            results.append(result)
+    redis.flushall()
+
+    for r in summarize.map(results):
+        print(r)
+        print("\n\n")
 
 
 @app.local_entrypoint()
