@@ -24,23 +24,23 @@ playwright_image = modal.Image.debian_slim(
 async def get_links(url: str) -> set[str]:
     from playwright.async_api import async_playwright
     from playwright._impl._errors import TargetClosedError
+
     try:
         async with async_playwright() as p:
-                browser = await p.chromium.launch()
-                page = await browser.new_page()
-                await page.goto(url)
-                links = await page.eval_on_selector_all(
-                    "a[href]", "elements => elements.map(element => element.href)"
-                )
-                await browser.close()
-
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await page.goto(url)
+            links = await page.eval_on_selector_all(
+                "a[href]", "elements => elements.map(element => element.href)"
+            )
+            await browser.close()
 
         base_url = links[0]
 
         # Filter out links that do not match the base url
         filtered_links = [link for link in links if base_url in link]
-        
-        #Redo as a list of tuples(base_url, filtered_links)
+
+        # Redo as a list of tuples(base_url, filtered_links)
         final_links = []
         for link in filtered_links:
             final_links.append((base_url, link))
@@ -49,14 +49,17 @@ async def get_links(url: str) -> set[str]:
     except Exception as e:
         return
 
-@app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
+
+@app.function(image=playwright_image, secrets=[modal.Secret.from_name("upstash-redis")])
 async def print_network_info(base_url: str, link: str) -> None:
     import asyncio
     from playwright.async_api import async_playwright
     from playwright._impl._errors import TargetClosedError
     from upstash_redis import Redis
 
-    redis = Redis(url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"])
+    redis = Redis(
+        url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"]
+    )
 
     if redis.sismember(base_url, link):
         return
@@ -65,30 +68,34 @@ async def print_network_info(base_url: str, link: str) -> None:
     try:
         responses = []
         async with async_playwright() as p:
-                browser = await p.chromium.launch()
-                context = await browser.new_context()
+            browser = await p.chromium.launch()
+            context = await browser.new_context()
 
-                # Add an event listener to print the response JSON of fetch/XHR requests
-                async def print_response(response):
-                    try:
-                        if response.request.resource_type == 'fetch' or response.request.resource_type == 'xhr':
-                            res = await response.json()
-                            if res is not None:
-                                responses.append(res)
-                    except Exception as e:
-                        return
-                
-                context.on('response', print_response)
+            # Add an event listener to print the response JSON of fetch/XHR requests
+            async def print_response(response):
+                try:
+                    if (
+                        response.request.resource_type == "fetch"
+                        or response.request.resource_type == "xhr"
+                    ):
+                        res = await response.json()
+                        if res is not None:
+                            responses.append(res)
+                except Exception as e:
+                    return
 
-                page = await context.new_page()
-                await page.goto(link)
-                await asyncio.sleep(5)
-                await browser.close()
-    
+            context.on("response", print_response)
+
+            page = await context.new_page()
+            await page.goto(link)
+            await asyncio.sleep(5)
+            await browser.close()
+
         return responses
 
     except Exception as e:
         return
+
 
 @app.function(image=playwright_image, secrets=[modal.Secret.from_name("my-aws-secret")])
 async def summarize(res: list[dict]):
@@ -98,7 +105,7 @@ async def summarize(res: list[dict]):
     # Create a Bedrock Runtime client in the AWS Region of your choice.
     client = boto3.client("bedrock-runtime", region_name="us-east-1")
     # Define the prompt for the model.
-    prompt = f"Extract only the elements that pose a security risk {res}"
+    prompt = f"Assess whether the response data poses a security risk. {res}. If not, say None."
 
     # Set the model ID, e.g., Claude 3 Haiku.
     model_id = "anthropic.claude-3-haiku-20240307-v1:0"
@@ -118,42 +125,63 @@ async def summarize(res: list[dict]):
 
     # Convert the native request to JSON.
     request = json.dumps(native_request)
-
+    response_text = ""
     try:
         # Invoke the model with the request.
         response = client.invoke_model(modelId=model_id, body=request)
 
-    except (ClientError, Exception) as e:
-        print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
-        exit(1)
-
+    except Exception as e:
+        response_text = "Error invoking model: " + str(e)
     # Decode the response body.
     model_response = json.loads(response["body"].read())
 
     # Extract and print the response text.
     response_text = model_response["content"][0]["text"]
-    print(response_text)
+    print("Response", response_text)
+    return response_text
 
 
-
-@app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
-def scrape():
+@app.function(image=playwright_image, secrets=[modal.Secret.from_name("upstash-redis")])
+def scrape(base_url: str):
     from upstash_redis import Redis
-    base_url = "http://modal.com"
-    redis = Redis(url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"])
+    import json
+
+    redis = Redis(
+        url="https://good-hen-52234.upstash.io", token=os.environ["UPSTASH_REDIS"]
+    )
 
     links = get_links.remote(base_url)
-    
+
     results = []
 
     for result in print_network_info.starmap(links):
-        if result is not None:
-            results.append(result)
+        results.append(result)
     redis.flushall()
 
+    website = {}
+
+    summarized_results = []
+
     for r in summarize.map(results):
+        summarized_results.append(r)
         print(r)
         print("\n\n")
+
+    print(len(links))
+    print(len(summarized_results))
+    for x in range(len(summarized_results)):
+        website[links[x][1]] = summarized_results[x]
+
+    # Turn the dictionary into a json
+    json_website = json.dumps(website)
+    return json_website
+
+
+@app.function()
+@modal.web_endpoint()
+def check(baseUrl: str):
+    response = scrape.remote(baseUrl)
+    return response
 
 
 @app.local_entrypoint()
