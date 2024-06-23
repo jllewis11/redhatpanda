@@ -38,13 +38,18 @@ async def get_links(url: str) -> set[str]:
         # Filter out links that do not match the base url
         filtered_links = [link for link in links if base_url in link]
         print(filtered_links)
+        
+        #Redo as a list of tuples(base_url, filtered_links)
+        final_links = []
+        for link in filtered_links:
+            final_links.append((base_url, link))
 
-        return filtered_links
+        return final_links
     except Exception as e:
         return
 
 @app.function(image=playwright_image,secrets=[modal.Secret.from_name("upstash-redis")])
-def print_network_info(link: str):
+def print_network_info(base_url: str, link: str) -> None:
 
     from playwright.sync_api import sync_playwright
     from upstash_redis import Redis
@@ -57,17 +62,20 @@ def print_network_info(link: str):
         redis.sadd(base_url, link)
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
-            context = browser.new_context()
+            try:
+                browser = p.chromium.launch()
+                context = browser.new_context()
 
-            # Add an event listener to print the response JSON of fetch/XHR requests
-            context.on('response', lambda response: (
-                print(response.json()) if response.request.resource_type == 'fetch' else None
-            ))
+                # Add an event listener to print the response JSON of fetch/XHR requests
+                context.on('response', lambda response: (
+                    print(response.json()) if response.request.resource_type == 'fetch' else None
+                ))
 
-            page = context.new_page()
-            page.goto(link)
-            browser.close()
+                page = context.new_page()
+                page.goto(link)
+                browser.close()
+            except Exception as e:
+                return
     except Exception as e:
         return
 
@@ -76,7 +84,7 @@ def scrape():
     base_url = "http://modal.com"
 
     links = get_links.remote(base_url)
-    for results in print_network_info.map(links):
+    for results in print_network_info.starmap(links,return_exceptions=False):
         print(results)
 
 @app.local_entrypoint()
