@@ -1,3 +1,5 @@
 modal
 upstash-redis
 boto3
+openai
+streamlit
